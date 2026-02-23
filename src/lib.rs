@@ -6,7 +6,7 @@ mod optional_argument;
 mod positional_argument;
 
 use crate::command_line_parsing::CommandLineParsing;
-use crate::command_line_parsing_results::CmdParsingResults;
+pub use crate::command_line_parsing_results::CmdParsingResults;
 use crate::default_argument::DefaultArgument;
 use crate::flag_argument::FlagArgument;
 use crate::optional_argument::OptionalArgument;
