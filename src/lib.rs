@@ -1,12 +1,12 @@
 mod command_line_parsing;
-mod command_line_parsing_results;
+pub mod command_line_parsing_results;
 mod default_argument;
 mod flag_argument;
 mod optional_argument;
 mod positional_argument;
 
 use crate::command_line_parsing::CommandLineParsing;
-pub use crate::command_line_parsing_results::CmdParsingResults;
+use crate::command_line_parsing_results::CmdParsingResults;
 use crate::default_argument::DefaultArgument;
 use crate::flag_argument::FlagArgument;
 use crate::optional_argument::OptionalArgument;
