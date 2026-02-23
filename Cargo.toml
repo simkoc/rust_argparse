@@ -1,6 +1,6 @@
 [package]
 name = "rust_argparse"
-version = "0.9.0"
+version = "1.0.0"
 edition = "2024"
 license = "LGPL-3.0"
 description = "A python-argparse inspired command line parser written in and for rust"
