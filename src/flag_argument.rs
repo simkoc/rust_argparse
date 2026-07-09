@@ -117,8 +117,30 @@ mod test {
     }
 
     #[test]
+    fn parse_non_matching_flag_leaves_cmdline_unchanged() -> Result<(), String> {
+        let cmdline: &[String] = &["--other".to_string(), "chaff".to_string()];
+        let mut result: CmdParsingResults = CmdParsingResults::new();
+        let flag: FlagArgument = get_flag();
+        let remaining = flag.parse(&mut result, cmdline)?;
+        assert_eq!(remaining, cmdline);
+        assert!(!result.keys().contains(&&"test".to_string()));
+        Ok(())
+    }
+
+    #[test]
     fn proper_help_msg_line() {
         let optional: FlagArgument = get_flag();
         assert_eq!(optional.help(), "-t,--test             test flag")
+    }
+
+    #[test]
+    fn proper_help_msg_line_longer_name() {
+        let flag = FlagArgument::new(
+            "verbose".to_string(),
+            "verbose".to_string(),
+            'v',
+            "enable verbose output".to_string(),
+        );
+        assert_eq!(flag.help(), "-v,--verbose          enable verbose output");
     }
 }
