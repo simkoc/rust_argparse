@@ -134,4 +134,17 @@ mod tests {
             "[test]                test value for unit testing"
         );
     }
+
+    #[test]
+    fn proper_help_msg_line_longer_name() {
+        let positional: PositionalArgument = PositionalArgument::new(
+            "input_file".to_string(),
+            |x| Box::new(x.clone()),
+            "path to the input file".to_string(),
+        );
+        assert_eq!(
+            positional.help().as_str(),
+            "[input_file]          path to the input file"
+        );
+    }
 }
