@@ -2,7 +2,7 @@
 name = "rust_argparse"
 version = "1.0.0"
 edition = "2024"
-license = "LGPL-3.0"
+license = "MIT"
 description = "A python-argparse inspired command line parser written in and for rust"
 homepage = "https://github.com/simkoc/rust_argparse"
 repository = "https://github.com/simkoc/rust_argparse"
