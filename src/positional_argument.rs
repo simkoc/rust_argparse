@@ -1,4 +1,3 @@
-use crate::command_line_parsing::CommandLineParsing;
 use crate::command_line_parsing_results::CmdParsingResults;
 use std::any::Any;
 
@@ -20,11 +19,9 @@ impl PositionalArgument {
     ) -> PositionalArgument {
         PositionalArgument { name, parser, doc }
     }
-}
 
-impl CommandLineParsing for PositionalArgument {
     //todo this is a magic constant that needs to be unified across all help generators
-    fn help(&self) -> String {
+    pub(crate) fn help(&self) -> String {
         let spaces = 20 - self.name.len();
         let spaced_name: String = "[".to_string()
             + &self.name
@@ -35,7 +32,7 @@ impl CommandLineParsing for PositionalArgument {
         spaced_name + &self.doc
     }
 
-    fn parse<'b>(
+    pub(crate) fn parse<'b>(
         &self,
         result: &mut CmdParsingResults,
         cmdline: &'b [String],
