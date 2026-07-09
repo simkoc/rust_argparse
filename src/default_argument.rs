@@ -1,4 +1,3 @@
-use crate::command_line_parsing::CommandLineParsing;
 use crate::command_line_parsing_results::CmdParsingResults;
 use std::any::Any;
 
@@ -20,14 +19,13 @@ impl DefaultArgument {
             parser,
         }
     }
-}
 
-impl CommandLineParsing for DefaultArgument {
-    fn help(&self) -> String {
+    #[allow(dead_code)]
+    pub(crate) fn help(&self) -> String {
         String::from("must not be displayed")
     }
 
-    fn parse<'b>(
+    pub(crate) fn parse<'b>(
         &self,
         result: &mut CmdParsingResults,
         cmdline: &'b [String],
