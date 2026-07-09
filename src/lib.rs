@@ -1,11 +1,11 @@
-mod command_line_parsing;
+#![doc = include_str!("../README.md")]
+
 pub mod command_line_parsing_results;
 mod default_argument;
 mod flag_argument;
 mod optional_argument;
 mod positional_argument;
 
-use crate::command_line_parsing::CommandLineParsing;
 use crate::command_line_parsing_results::CmdParsingResults;
 use crate::default_argument::DefaultArgument;
 use crate::flag_argument::FlagArgument;
@@ -15,19 +15,72 @@ use std::any::Any;
 use std::cell::RefCell;
 use std::env;
 
-pub struct Parser {
+/// Converts a plain closure or named function into the boxed trait object
+/// stored by [`Parser`], so `with_main` never requires writing `Box::new`.
+pub trait IntoMain<F: ?Sized> {
+    fn into_main(self) -> Box<F>;
+}
+
+macro_rules! impl_into_main {
+    ($($arg:ident),*) => {
+        impl<Fun, Output, $($arg),*> IntoMain<dyn FnOnce($($arg),*) -> Output> for Fun
+        where
+            Fun: FnOnce($($arg),*) -> Output + 'static,
+        {
+            fn into_main(self) -> Box<dyn FnOnce($($arg),*) -> Output> {
+                Box::new(self)
+            }
+        }
+    };
+}
+
+impl_into_main!();
+impl_into_main!(A);
+impl_into_main!(A, B);
+impl_into_main!(A, B, C);
+impl_into_main!(A, B, C, D);
+impl_into_main!(A, B, C, D, E);
+impl_into_main!(A, B, C, D, E, G);
+
+// `&CmdParsingResults` is only ever borrowed for the duration of a single
+// `main` invocation, so a closure taking it needs to accept *any* lifetime
+// (a higher-ranked bound), not one fixed lifetime. That can't be expressed
+// by the generic `impl_into_main!` family above, so it gets its own family
+// with `&CmdParsingResults` hard-coded as the leading parameter.
+macro_rules! impl_into_main_with_results {
+    ($($arg:ident),*) => {
+        #[allow(coherence_leak_check)]
+        impl<Fun, Output, $($arg),*> IntoMain<dyn for<'a> FnOnce(&'a CmdParsingResults, $($arg),*) -> Output> for Fun
+        where
+            Fun: for<'a> FnOnce(&'a CmdParsingResults, $($arg),*) -> Output + 'static,
+        {
+            fn into_main(self) -> Box<dyn for<'a> FnOnce(&'a CmdParsingResults, $($arg),*) -> Output> {
+                Box::new(self)
+            }
+        }
+    };
+}
+
+impl_into_main_with_results!();
+impl_into_main_with_results!(A);
+impl_into_main_with_results!(A, B);
+impl_into_main_with_results!(A, B, C);
+impl_into_main_with_results!(A, B, C, D);
+impl_into_main_with_results!(A, B, C, D, E);
+
+pub struct Parser<F: ?Sized + 'static> {
     name: String,
     doc: String,
     defaults: Vec<DefaultArgument>,
-    actions: Vec<Parser>,
+    actions: Vec<Parser<F>>,
     positionals: Vec<PositionalArgument>,
     optionals: Vec<OptionalArgument>,
     flags: Vec<FlagArgument>,
-    main: RefCell<Option<Box<dyn FnOnce(&CmdParsingResults) -> Result<(), String>>>>,
+    main: RefCell<Option<Box<F>>>,
 }
 
-impl Parser {
-    pub fn new(name: &str, doc: &str) -> Parser {
+impl<F: ?Sized + 'static> Parser<F> {
+    pub fn new(name: &str, doc: &str) -> Parser<F> {
         Parser {
             name: name.to_string(),
             doc: doc.to_string(),
@@ -40,22 +93,19 @@ impl Parser {
         }
     }
 
-    pub fn with_main<F: FnOnce(&CmdParsingResults) -> Result<(), String> + 'static>(
-        self,
-        f: F,
-    ) -> Parser {
-        *self.main.borrow_mut() = Some(Box::new(f));
+    pub fn with_main<Fun: IntoMain<F>>(self, f: Fun) -> Parser<F> {
+        *self.main.borrow_mut() = Some(f.into_main());
         self
     }
 
     #[allow(unused)]
-    pub fn add_action(mut self, parser: Parser) -> Parser {
+    pub fn add_action(mut self, parser: Parser<F>) -> Parser<F> {
         self.actions.push(parser);
         self
     }
 
     #[allow(unused)]
-    pub fn add_default(self, name: String, value: String) -> Parser {
+    pub fn add_default(self, name: String, value: String) -> Parser<F> {
         self.add_parsed_default(name, value, |val: &String| Box::new(val.clone()))
     }
 
@@ -65,13 +115,13 @@ impl Parser {
         name: String,
         value: String,
         parser: fn(&String) -> Box<dyn Any>,
-    ) -> Parser {
+    ) -> Parser<F> {
         self.defaults
             .push(DefaultArgument::new(name, value, parser));
         self
     }
 
-    pub fn add_positional(self, name: &str, doc: &str) -> Parser {
+    pub fn add_positional(self, name: &str, doc: &str) -> Parser<F> {
         self.add_parsed_positional(name, |val: &String| Box::new(val.clone()), doc)
     }
 
@@ -80,7 +130,7 @@ impl Parser {
         name: &str,
         parser: fn(&String) -> Box<dyn Any>,
         doc: &str,
-    ) -> Parser {
+    ) -> Parser<F> {
         self.positionals.push(PositionalArgument::new(
             name.to_string(),
             parser,
@@ -97,7 +147,7 @@ impl Parser {
         short: char,
         default: Option<&str>,
         doc: &str,
-    ) -> Parser {
+    ) -> Parser<F> {
         self.add_parsed_optional(name, long, short, default, |val| Box::new(val.clone()), doc)
     }
 
@@ -109,7 +159,7 @@ impl Parser {
         default: Option<&str>,
         parser: fn(&String) -> Box<dyn Any>,
         doc: &str,
-    ) -> Parser {
+    ) -> Parser<F> {
         let conv_default = match default {
             Some(str) => Some(str.to_string()),
             None => None,
@@ -126,7 +176,7 @@ impl Parser {
     }
 
     #[allow(unused)]
-    pub fn add_flag(mut self, name: &str, long: &str, short: char, doc: &str) -> Parser {
+    pub fn add_flag(mut self, name: &str, long: &str, short: char, doc: &str) -> Parser<F> {
         self.flags.push(FlagArgument::new(
             name.to_string(),
             long.to_string(),
@@ -136,19 +186,18 @@ impl Parser {
         self
     }
 
-    pub fn parse_cmdline(&self) -> Result<CmdParsingResults, String> {
+    pub fn parse_cmdline(&self) -> Result<(CmdParsingResults, Box<F>), String> {
         let arg_slice = env::args().collect::<Vec<String>>();
         self.parse(arg_slice[1..].to_vec())
     }
 
-    pub fn parse(&self, cmdline_args: Vec<String>) -> Result<CmdParsingResults, String> {
+    pub fn parse(&self, cmdline_args: Vec<String>) -> Result<(CmdParsingResults, Box<F>), String> {
         let mut result = CmdParsingResults::new();
         result.set_action(self.name.clone());
-        //println!("{} parsing remaining: {}",self.name, cmdline_args.join(" "));
-        match CommandLineParsing::parse(self, &mut result, &cmdline_args[..]) {
-            Ok(remaining) => {
+        match self.parse_tree(&mut result, &cmdline_args[..]) {
+            Ok((remaining, main)) => {
                 if remaining.is_empty() {
-                    Ok(result)
+                    Ok((result, main))
                 } else {
                     Err(format!(
                         "Too many cmd arguments after: {:?} \n\n {}",
@@ -252,7 +301,7 @@ impl Parser {
         Ok(remaining_cmd_line)
     }
 
-    fn find_matching_action(&self, name: &str) -> Option<&Parser> {
+    fn find_matching_action(&self, name: &str) -> Option<&Parser<F>> {
         self.actions.iter().find(|action| action.name == name)
     }
 
@@ -260,15 +309,14 @@ impl Parser {
         &self,
         result: &mut CmdParsingResults,
         cmdline: &'b [String],
-    ) -> Result<&'b [String], String> {
+    ) -> Result<(&'b [String], Box<F>), String> {
         if self.actions.is_empty() {
             let main = self
                 .main
                 .borrow_mut()
                 .take()
                 .unwrap_or_else(|| panic!("leaf parser '{}' has no main function", self.name));
-            result.set_main(main);
-            return Ok(cmdline);
+            return Ok((cmdline, main));
         }
         let action_name = cmdline
             .first()
@@ -276,9 +324,9 @@ impl Parser {
         let action = self
             .find_matching_action(action_name)
             .ok_or_else(|| format!("Unknown action {}", action_name))?;
-        let remaining = CommandLineParsing::parse(action, result, &cmdline[1..])?;
+        let (remaining, main) = action.parse_tree(result, &cmdline[1..])?;
         if remaining.is_empty() {
-            Ok(remaining)
+            Ok((remaining, main))
         } else {
             Err(format!(
                 "Too many supplied arguments after: {:?}\n\n{}",
@@ -287,9 +335,21 @@ impl Parser {
             ))
         }
     }
-}
 
-impl Parser {
+    fn parse_tree<'b>(
+        &self,
+        result: &mut CmdParsingResults,
+        cmdline: &'b [String],
+    ) -> Result<(&'b [String], Box<F>), String> {
+        result.set_action(self.name.clone());
+        let mut remaining_cmd_line: &[String] = cmdline;
+        remaining_cmd_line = self.parse_default_arguments(result, remaining_cmd_line)?;
+        remaining_cmd_line = self.parse_positional_arguments(result, remaining_cmd_line)?;
+        remaining_cmd_line = self.parse_optional_arguments(result, remaining_cmd_line)?;
+        remaining_cmd_line = self.parse_flag_arguments(result, remaining_cmd_line)?;
+        self.parse_action_arguments(result, remaining_cmd_line)
+    }
+
     fn build_usage_line(&self) -> String {
         let mut usage = "usage: ".to_string() + self.name.as_str();
         for positional in self.positionals.iter() {
@@ -342,49 +402,10 @@ impl Parser {
         }
         body
     }
-}
 
-impl CommandLineParsing for Parser {
-    fn help(&self) -> String {
+    pub fn help(&self) -> String {
         let header = self.name.clone() + " - " + self.doc.as_str();
         header + "\n\n" + &self.build_usage_line() + "\n\n" + &self.build_help_body()
-    }
-
-    fn parse<'b>(
-        &self,
-        result: &mut CmdParsingResults,
-        cmdline: &'b [String],
-    ) -> Result<&'b [String], String> {
-        result.set_action(self.name.clone());
-        // add the defaults of this parser to the command line
-        let mut remaining_cmd_line: &[String] = cmdline;
-        // first parse default arguments
-        match self.parse_default_arguments(result, remaining_cmd_line) {
-            Ok(remaining) => remaining_cmd_line = remaining,
-            Err(e) => return Err(e),
-        }
-        // parse the positional arguments
-        match self.parse_positional_arguments(result, &remaining_cmd_line) {
-            Ok(remaining) => remaining_cmd_line = remaining,
-            Err(e) => return Err(e),
-        }
-        // parse the optional arguments
-        match self.parse_optional_arguments(result, &remaining_cmd_line) {
-            Ok(remaining) => remaining_cmd_line = remaining,
-            Err(e) => return Err(e),
-        }
-        // parse the flags arguments
-        match self.parse_flag_arguments(result, &remaining_cmd_line) {
-            Ok(remaining) => remaining_cmd_line = remaining,
-            Err(e) => return Err(e),
-        }
-        // parse the action arguments
-        match self.parse_action_arguments(result, &remaining_cmd_line) {
-            Ok(remaining) => remaining_cmd_line = remaining,
-            Err(e) => return Err(e),
-        }
-        //todo: when I reach this remaining should be empty
-        Ok(remaining_cmd_line)
     }
 }
 
@@ -392,11 +413,13 @@ impl CommandLineParsing for Parser {
 mod test {
     use super::*;
 
-    fn stub_main(_: &CmdParsingResults) -> Result<(), String> {
+    type StubAction = dyn FnOnce() -> Result<(), String>;
+
+    fn stub_main() -> Result<(), String> {
         Ok(())
     }
 
-    fn get_basic_cmd_parser() -> Parser {
+    fn get_basic_cmd_parser() -> Parser<StubAction> {
         Parser::new("test", "I am a test")
             .add_default("default".to_string(), "test".to_string())
             .add_positional("positional", "I am the positional")
@@ -411,7 +434,7 @@ mod test {
             .with_main(stub_main)
     }
 
-    fn get_nested_parser() -> Parser {
+    fn get_nested_parser() -> Parser<StubAction> {
         get_basic_cmd_parser().add_action(
             Parser::new("compute", "I am da computaaah")
                 .add_positional("stuff", "stuff indeed")
@@ -428,7 +451,7 @@ mod test {
             "-f".to_string(),
             "wrong-action".to_string(),
         ];
-        let parser: Parser = get_nested_parser();
+        let parser: Parser<StubAction> = get_nested_parser();
         assert!(parser.parse(Vec::from(args)).is_err())
     }
 
@@ -440,7 +463,7 @@ mod test {
             "optional".to_string(),
             "-f".to_string(),
         ];
-        let parser: Parser = get_nested_parser();
+        let parser: Parser<StubAction> = get_nested_parser();
         assert!(parser.parse(Vec::from(args)).is_err())
     }
 
@@ -452,9 +475,9 @@ mod test {
             "optional".to_string(),
             "-f".to_string(),
         ];
-        let parser: Parser = get_basic_cmd_parser();
+        let parser: Parser<StubAction> = get_basic_cmd_parser();
         match parser.parse(Vec::from(args)) {
-            Ok(result) => {
+            Ok((result, _main)) => {
                 assert_eq!(result.get_action(), "test");
                 assert_eq!(result.get_value::<String>("positional"), "positional");
                 assert_eq!(result.get_value::<String>("optional"), "optional");
@@ -474,9 +497,9 @@ mod test {
             "compute".to_string(),
             "values".to_string(),
         ];
-        let parser: Parser = get_nested_parser();
+        let parser: Parser<StubAction> = get_nested_parser();
         match parser.parse(Vec::from(args)) {
-            Ok(result) => {
+            Ok((result, _main)) => {
                 assert_eq!(result.get_action(), "compute");
                 assert_eq!(result.get_value::<String>("positional"), "positional");
                 assert_eq!(result.get_value::<String>("optional"), "optional");
@@ -490,29 +513,30 @@ mod test {
     #[test]
     fn run_calls_main_and_propagates_ok() {
         let args: &[String] = &["positional".to_string()];
-        let parser = Parser::new("test", "doc")
+        let parser: Parser<StubAction> = Parser::new("test", "doc")
             .add_positional("positional", "a value")
-            .with_main(|_| Ok(()));
-        let result = parser.parse(Vec::from(args)).unwrap();
-        assert!(result.run().is_ok());
+            .with_main(|| Ok(()));
+        let (_results, main) = parser.parse(Vec::from(args)).unwrap();
+        assert!(main().is_ok());
     }
 
     #[test]
     fn run_propagates_error_from_main() {
         let args: &[String] = &["positional".to_string()];
-        let parser = Parser::new("test", "doc")
+        let parser: Parser<StubAction> = Parser::new("test", "doc")
             .add_positional("positional", "a value")
-            .with_main(|_| Err("something went wrong".to_string()));
-        let result = parser.parse(Vec::from(args)).unwrap();
-        assert_eq!(result.run(), Err("something went wrong".to_string()));
+            .with_main(|| Err("something went wrong".to_string()));
+        let (_results, main) = parser.parse(Vec::from(args)).unwrap();
+        assert_eq!(main(), Err("something went wrong".to_string()));
     }
 
     #[test]
     #[should_panic(expected = "leaf parser 'test' has no main function")]
     fn parse_leaf_without_main_panics() {
         let args: &[String] = &["positional".to_string()];
-        let parser = Parser::new("test", "doc").add_positional("positional", "a value");
-        parser.parse(Vec::from(args)).unwrap();
+        let parser: Parser<StubAction> =
+            Parser::new("test", "doc").add_positional("positional", "a value");
+        let _ = parser.parse(Vec::from(args)).unwrap();
     }
 
     #[test]
@@ -522,21 +546,32 @@ mod test {
             "compute".to_string(),
             "stuff".to_string(),
         ];
-        let parser = Parser::new("test", "doc")
+        let parser: Parser<StubAction> = Parser::new("test", "doc")
             .add_positional("positional", "a value")
-            .with_main(|_| Err("wrong main called".to_string()))
+            .with_main(|| Err("wrong main called".to_string()))
             .add_action(
                 Parser::new("compute", "compute things")
                     .add_positional("stuff", "stuff")
-                    .with_main(|_| Ok(())),
+                    .with_main(|| Ok(())),
             );
-        let result = parser.parse(Vec::from(args)).unwrap();
-        assert!(result.run().is_ok());
+        let (_results, main) = parser.parse(Vec::from(args)).unwrap();
+        assert!(main().is_ok());
+    }
+
+    #[test]
+    fn with_main_accepts_closure_taking_results() {
+        type ActionWithResults = dyn FnOnce(&CmdParsingResults) -> Result<String, String>;
+        let args: &[String] = &["World".to_string()];
+        let parser: Parser<ActionWithResults> = Parser::new("greet", "doc")
+            .add_positional("name", "who to greet")
+            .with_main(|results: &CmdParsingResults| Ok(results.get_value::<String>("name").clone()));
+        let (results, main) = parser.parse(Vec::from(args)).unwrap();
+        assert_eq!(main(&results), Ok("World".to_string()));
     }
 
     #[test]
     fn generate_help_message_no_actions() {
-        let parser = Parser::new("tool", "A simple tool")
+        let parser: Parser<StubAction> = Parser::new("tool", "A simple tool")
             .add_positional("input", "the input value")
             .add_flag("verbose", "verbose", 'v', "enable verbose output");
         let expected = r#"tool - A simple tool
@@ -551,7 +586,7 @@ usage: tool [input] {-v}
 
     #[test]
     fn generate_help_message() {
-        let parser: Parser = get_nested_parser();
+        let parser: Parser<StubAction> = get_nested_parser();
         let help = parser.help();
         let expected = r#"test - I am a test
 
@@ -575,7 +610,7 @@ compute               I am da computaaah
             "compute".to_string(),
             "values".to_string(),
         ];
-        let parser: Parser = get_nested_parser();
+        let parser: Parser<StubAction> = get_nested_parser();
         let expected = r#"test - I am a test
 
 usage: test [positional] {-o,-f} compute
@@ -603,7 +638,7 @@ compute               I am da computaaah
             "compute".to_string(),
             "--help".to_string(),
         ];
-        let parser: Parser = get_nested_parser();
+        let parser: Parser<StubAction> = get_nested_parser();
         let expected = r#"compute - I am da computaaah
 
 usage: compute [stuff]
