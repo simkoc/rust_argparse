@@ -1,4 +1,3 @@
-use crate::command_line_parsing::CommandLineParsing;
 use crate::command_line_parsing_results::CmdParsingResults;
 use std::any::Any;
 
@@ -45,10 +44,8 @@ impl OptionalArgument {
     pub(crate) fn parser(&self) -> fn(&String) -> Box<dyn Any> {
         self.parser
     }
-}
 
-impl CommandLineParsing for OptionalArgument {
-    fn help(&self) -> String {
+    pub(crate) fn help(&self) -> String {
         let name = format!("-{},--{}", self.short, self.long);
         let spaces = 22 - name.len();
         name + String::from_utf8(vec![b' '; spaces])
@@ -57,7 +54,7 @@ impl CommandLineParsing for OptionalArgument {
             + &self.doc
     }
 
-    fn parse<'b>(
+    pub(crate) fn parse<'b>(
         &self,
         result: &mut CmdParsingResults,
         cmdline: &'b [String],
