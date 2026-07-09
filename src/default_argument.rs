@@ -42,7 +42,7 @@ mod test {
     use super::*;
 
     #[test]
-    fn parse_default_argument() {
+    fn parse_default_argument_leaves_cmdline_unchanged() {
         let cmdline = ["does".to_string(), "not".to_string(), "matter".to_string()];
         let default = DefaultArgument::new("test".to_string(), "test".to_string(), |val| {
             Box::new(val.clone())
@@ -52,5 +52,31 @@ mod test {
             Ok(remaining) => assert_eq!(cmdline, remaining),
             Err(msg) => panic!("{}", msg),
         }
+    }
+
+    #[test]
+    fn parse_default_argument_stores_converted_value() {
+        let cmdline: &[String] = &[];
+        let default = DefaultArgument::new(
+            "count".to_string(),
+            "42".to_string(),
+            |val| Box::new(val.parse::<i32>().expect("default value must be a number")),
+        );
+        let mut result: CmdParsingResults = CmdParsingResults::new();
+        default.parse(&mut result, cmdline).unwrap();
+        assert_eq!(*result.get_value::<i32>("count"), 42);
+    }
+
+    #[test]
+    #[should_panic(expected = "default value must be a number")]
+    fn parse_default_argument_panics_on_bad_conversion() {
+        let cmdline: &[String] = &[];
+        let default = DefaultArgument::new(
+            "count".to_string(),
+            "not-a-number".to_string(),
+            |val| Box::new(val.parse::<i32>().expect("default value must be a number")),
+        );
+        let mut result: CmdParsingResults = CmdParsingResults::new();
+        default.parse(&mut result, cmdline).unwrap();
     }
 }
