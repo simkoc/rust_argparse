@@ -12,6 +12,7 @@ use crate::flag_argument::FlagArgument;
 use crate::optional_argument::OptionalArgument;
 use crate::positional_argument::PositionalArgument;
 use std::any::Any;
+use std::cell::RefCell;
 use std::env;
 
 pub struct Parser {
@@ -22,6 +23,7 @@ pub struct Parser {
     positionals: Vec<PositionalArgument>,
     optionals: Vec<OptionalArgument>,
     flags: Vec<FlagArgument>,
+    main: RefCell<Option<Box<dyn FnOnce(&CmdParsingResults) -> Result<(), String>>>>,
 }
 
 impl Parser {
@@ -34,7 +36,16 @@ impl Parser {
             positionals: Vec::new(),
             optionals: Vec::new(),
             flags: Vec::new(),
+            main: RefCell::new(None),
         }
+    }
+
+    pub fn with_main<F: FnOnce(&CmdParsingResults) -> Result<(), String> + 'static>(
+        self,
+        f: F,
+    ) -> Parser {
+        *self.main.borrow_mut() = Some(Box::new(f));
+        self
     }
 
     #[allow(unused)]
@@ -241,129 +252,102 @@ impl Parser {
         Ok(remaining_cmd_line)
     }
 
+    fn find_matching_action(&self, name: &str) -> Option<&Parser> {
+        self.actions.iter().find(|action| action.name == name)
+    }
+
     fn parse_action_arguments<'b>(
         &self,
         result: &mut CmdParsingResults,
         cmdline: &'b [String],
     ) -> Result<&'b [String], String> {
-        //println!("parsing actions starting with : {}", cmdline.join(" "));
-        let remaining_cmd_line = cmdline;
-        // if there are no elements remaining but there should be actions
         if self.actions.is_empty() {
-            if remaining_cmd_line.is_empty() {
-                return Ok(remaining_cmd_line);
-            }
+            let main = self
+                .main
+                .borrow_mut()
+                .take()
+                .unwrap_or_else(|| panic!("leaf parser '{}' has no main function", self.name));
+            result.set_main(main);
+            return Ok(cmdline);
+        }
+        let action_name = cmdline
+            .first()
+            .ok_or_else(|| format!("You have to chose an action. \n\n {}", self.help()))?;
+        let action = self
+            .find_matching_action(action_name)
+            .ok_or_else(|| format!("Unknown action {}", action_name))?;
+        let remaining = CommandLineParsing::parse(action, result, &cmdline[1..])?;
+        if remaining.is_empty() {
+            Ok(remaining)
         } else {
-            if remaining_cmd_line.is_empty() {
-                return Err(format!("You have to chose an action. \n\n {}", self.help()));
-            }
+            Err(format!(
+                "Too many supplied arguments after: {:?}\n\n{}",
+                remaining,
+                self.help()
+            ))
         }
-        // otherwise go through all action elements
-        for (_, item) in self.actions.iter().enumerate() {
-            //println!("testing action {}", item.name);
-            // if we have an action with a name matching the current first cmdline argument
-            if item.name == *remaining_cmd_line.first().unwrap() {
-                // run the parser
-                return match CommandLineParsing::parse(item, result, &remaining_cmd_line[1..]) {
-                    // if success
-                    Ok(remains) =>
-                    // and we fully parsed the cmd line string
-                    {
-                        if remains.is_empty() {
-                            // return the result
-                            //println!("parsed ...");
-                            Ok(remains)
-                        // if we did not fully parse
-                        } else {
-                            // thats an error
-                            Err(format!(
-                                "Too many supplied arguments after: {:?}\n\n{}",
-                                remains,
-                                self.help()
-                            ))
-                        }
-                    }
-                    // if unsuccessful
-                    Err(e) =>
-                    // return the encountered issue down the stack
-                    {
-                        Err(e)
-                    }
-                };
-            }
+    }
+}
+
+impl Parser {
+    fn build_usage_line(&self) -> String {
+        let mut usage = "usage: ".to_string() + self.name.as_str();
+        for positional in self.positionals.iter() {
+            usage += &format!(" [{}]", positional.name());
         }
-        // if we are here the currently specified action is unknown
-        Err(format!(
-            "Unknown action {}",
-            remaining_cmd_line
-                .first()
-                .expect("the remaining_cmd_line should be non empty")
-        ))
+        if !self.optionals.is_empty() || !self.flags.is_empty() {
+            usage += " {";
+            let shorts: Vec<String> = self
+                .optionals
+                .iter()
+                .map(|o| format!("-{}", o.short()))
+                .chain(self.flags.iter().map(|f| format!("-{}", f.short())))
+                .collect();
+            usage += &shorts.join(",");
+            usage += "}";
+        }
+        for (num, action) in self.actions.iter().enumerate() {
+            if num != 0 {
+                usage += ",";
+            } else {
+                usage += " ";
+            }
+            usage += action.name.as_str();
+        }
+        usage.trim().to_string()
+    }
+
+    fn build_help_body(&self) -> String {
+        let mut body = String::new();
+        for positional in self.positionals.iter() {
+            body += &positional.help();
+            body += "\n";
+        }
+        for optional in self.optionals.iter() {
+            body += &optional.help();
+            body += "\n";
+        }
+        for flag in self.flags.iter() {
+            body += &flag.help();
+            body += "\n";
+        }
+        for action in self.actions.iter() {
+            let name = action.name.as_str();
+            let spaces = 22 - name.len();
+            body += name;
+            body += &String::from_utf8(vec![b' '; spaces])
+                .expect("should be a string of whitespaces");
+            body += action.doc.as_str();
+            body += "\n";
+        }
+        body
     }
 }
 
 impl CommandLineParsing for Parser {
     fn help(&self) -> String {
-        let mut help_msg_head = self.name.clone() + " - " + self.doc.as_str();
-        let mut help_msg_cmd_line: String = "usage: ".to_string();
-        let mut help_msg_body: String = "".to_string();
-        help_msg_cmd_line += self.name.as_str();
-        for positional in self.positionals.iter() {
-            help_msg_cmd_line += " ";
-            help_msg_cmd_line += "[";
-            help_msg_cmd_line += positional.name();
-            help_msg_cmd_line += "]";
-            help_msg_body += positional.help().as_str();
-            help_msg_body += "\n";
-        }
-        let mut counter = 1000;
-        if !self.optionals.is_empty() || !self.flags.is_empty() {
-            help_msg_cmd_line += " ";
-            help_msg_cmd_line += "{";
-        }
-        for (num, optional) in self.optionals.iter().enumerate() {
-            if counter != 1000 {
-                help_msg_cmd_line += ",";
-            }
-            counter = num;
-            help_msg_cmd_line += "-";
-            help_msg_cmd_line += String::from(optional.short()).as_str();
-            help_msg_body += optional.help().as_str();
-            help_msg_body += "\n";
-        }
-        for (num, flag) in self.flags.iter().enumerate() {
-            if counter != 1000 {
-                help_msg_cmd_line += ",";
-            }
-            counter = num;
-            help_msg_cmd_line += "-";
-            help_msg_cmd_line += String::from(flag.short()).as_str();
-            help_msg_body += flag.help().as_str();
-            help_msg_body += "\n";
-        }
-        if !self.optionals.is_empty() || !self.flags.is_empty() {
-            help_msg_cmd_line += "}";
-        }
-        help_msg_cmd_line += " ";
-        for (num, action) in self.actions.iter().enumerate() {
-            if num != 0 {
-                help_msg_cmd_line += ",";
-            }
-            help_msg_cmd_line += action.name.as_str();
-            let name = action.name.as_str();
-            let spaces = 22 - name.len();
-            help_msg_body += name;
-            help_msg_body += String::from_utf8(vec![b' '; spaces])
-                .expect("should be a string of whitespaces")
-                .as_str();
-            help_msg_body += action.doc.as_str();
-            help_msg_body += "\n";
-        }
-        help_msg_head += "\n\n";
-        help_msg_head += &*help_msg_cmd_line.trim();
-        help_msg_head += "\n\n";
-        help_msg_head += &*help_msg_body;
-        help_msg_head
+        let header = self.name.clone() + " - " + self.doc.as_str();
+        header + "\n\n" + &self.build_usage_line() + "\n\n" + &self.build_help_body()
     }
 
     fn parse<'b>(
@@ -408,6 +392,10 @@ impl CommandLineParsing for Parser {
 mod test {
     use super::*;
 
+    fn stub_main(_: &CmdParsingResults) -> Result<(), String> {
+        Ok(())
+    }
+
     fn get_basic_cmd_parser() -> Parser {
         Parser::new("test", "I am a test")
             .add_default("default".to_string(), "test".to_string())
@@ -420,11 +408,14 @@ mod test {
                 "I am the optional",
             )
             .add_flag("flag", "flag", 'f', "I am the flag")
+            .with_main(stub_main)
     }
 
     fn get_nested_parser() -> Parser {
         get_basic_cmd_parser().add_action(
-            Parser::new("compute", "I am da computaaah").add_positional("stuff", "stuff indeed"),
+            Parser::new("compute", "I am da computaaah")
+                .add_positional("stuff", "stuff indeed")
+                .with_main(stub_main),
         )
     }
 
@@ -494,6 +485,68 @@ mod test {
             }
             Err(e) => panic!("{}", e),
         }
+    }
+
+    #[test]
+    fn run_calls_main_and_propagates_ok() {
+        let args: &[String] = &["positional".to_string()];
+        let parser = Parser::new("test", "doc")
+            .add_positional("positional", "a value")
+            .with_main(|_| Ok(()));
+        let result = parser.parse(Vec::from(args)).unwrap();
+        assert!(result.run().is_ok());
+    }
+
+    #[test]
+    fn run_propagates_error_from_main() {
+        let args: &[String] = &["positional".to_string()];
+        let parser = Parser::new("test", "doc")
+            .add_positional("positional", "a value")
+            .with_main(|_| Err("something went wrong".to_string()));
+        let result = parser.parse(Vec::from(args)).unwrap();
+        assert_eq!(result.run(), Err("something went wrong".to_string()));
+    }
+
+    #[test]
+    #[should_panic(expected = "leaf parser 'test' has no main function")]
+    fn parse_leaf_without_main_panics() {
+        let args: &[String] = &["positional".to_string()];
+        let parser = Parser::new("test", "doc").add_positional("positional", "a value");
+        parser.parse(Vec::from(args)).unwrap();
+    }
+
+    #[test]
+    fn run_dispatches_correct_main_for_sub_action() {
+        let args: &[String] = &[
+            "pos".to_string(),
+            "compute".to_string(),
+            "stuff".to_string(),
+        ];
+        let parser = Parser::new("test", "doc")
+            .add_positional("positional", "a value")
+            .with_main(|_| Err("wrong main called".to_string()))
+            .add_action(
+                Parser::new("compute", "compute things")
+                    .add_positional("stuff", "stuff")
+                    .with_main(|_| Ok(())),
+            );
+        let result = parser.parse(Vec::from(args)).unwrap();
+        assert!(result.run().is_ok());
+    }
+
+    #[test]
+    fn generate_help_message_no_actions() {
+        let parser = Parser::new("tool", "A simple tool")
+            .add_positional("input", "the input value")
+            .add_flag("verbose", "verbose", 'v', "enable verbose output");
+        let expected = r#"tool - A simple tool
+
+usage: tool [input] {-v}
+
+[input]               the input value
+-v,--verbose          enable verbose output
+"#;
+        assert_eq!(parser.help(), expected);
     }
 
     #[test]
