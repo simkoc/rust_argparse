@@ -1,4 +1,3 @@
-use crate::command_line_parsing::CommandLineParsing;
 use crate::command_line_parsing_results::CmdParsingResults;
 
 pub(crate) struct FlagArgument {
@@ -25,10 +24,8 @@ impl FlagArgument {
             doc,
         }
     }
-}
 
-impl CommandLineParsing for FlagArgument {
-    fn help(&self) -> String {
+    pub(crate) fn help(&self) -> String {
         let name = format!("-{},--{}", self.short, self.long);
         let spaces = 22 - name.len();
         name + String::from_utf8(vec![b' '; spaces])
@@ -37,7 +34,7 @@ impl CommandLineParsing for FlagArgument {
             + &self.doc
     }
 
-    fn parse<'a>(
+    pub(crate) fn parse<'a>(
         &self,
         result: &mut CmdParsingResults,
         cmdline: &'a [String],
