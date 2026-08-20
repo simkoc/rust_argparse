@@ -310,6 +310,7 @@ impl<F: ?Sized + 'static> Parser<F> {
         result: &mut CmdParsingResults,
         cmdline: &'b [String],
     ) -> Result<(&'b [String], Box<F>), String> {
+        self.check_for_help(cmdline)?;
         if self.actions.is_empty() {
             let main = self
                 .main
@@ -537,6 +538,30 @@ mod test {
         let parser: Parser<StubAction> =
             Parser::new("test", "doc").add_positional("positional", "a value");
         let _ = parser.parse(Vec::from(args)).unwrap();
+    }
+
+    #[test]
+    fn triggering_help_on_bare_leaf_with_no_other_arguments() {
+        let args: &[String] = &["--help".to_string()];
+        let parser: Parser<StubAction> = Parser::new("bare", "a bare leaf").with_main(stub_main);
+        match parser.parse(Vec::from(args)) {
+            Ok(_) => panic!("Should not have parsed"),
+            Err(msg) => assert_eq!(msg, parser.help()),
+        }
+    }
+
+    #[test]
+    fn triggering_help_on_action_selector_with_no_other_arguments() {
+        let args: &[String] = &["--help".to_string()];
+        let parser: Parser<StubAction> = Parser::new("root", "chooses an action").add_action(
+            Parser::new("compute", "I am da computaaah")
+                .add_positional("stuff", "stuff indeed")
+                .with_main(stub_main),
+        );
+        match parser.parse(Vec::from(args)) {
+            Ok(_) => panic!("Should not have parsed"),
+            Err(msg) => assert_eq!(msg, parser.help()),
+        }
     }
 
     #[test]

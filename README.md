@@ -64,6 +64,18 @@ named, free-standing function.
 parsed values, and the function belonging to whichever leaf action matched.
 Call that function directly with whatever `F` declares.
 
+**Closures taking `&CmdParsingResults` need an explicit parameter type**, e.g.
+`.with_main(|pargs: &CmdParsingResults| { ... })`, not `.with_main(|pargs| { ... })`.
+This is a Rust inference limitation, not a quirk of this crate: a closure is
+only inferred as higher-ranked (`for<'a> FnOnce(&'a T) -> O`, i.e. "works for
+any lifetime") when that bound is directly visible while the closure literal
+is being checked. Here it's one step removed — visible only through
+`with_main`'s `IntoMain<F>` bound — so rustc falls back to inferring a
+single, concrete lifetime, which then fails to satisfy `F`'s higher-ranked
+requirement. Annotating the parameter type sidesteps the inference gap
+entirely. Named functions (like `deploy_action` in Example 2) aren't
+affected, since their parameter types are always written out.
+
 ## Examples
 
 The code examples are compiled and run as part of `cargo test` (via
